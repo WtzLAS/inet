@@ -4,18 +4,18 @@ use nom::{
     character::complete::{alpha1, alphanumeric1, digit1, multispace0},
     combinator::{opt, recognize},
     error::ParseError,
-    multi::{many0, separated_list0, separated_list1},
+    multi::{many0, many1, separated_list0, separated_list1},
     sequence::{delimited, pair},
     Err, IResult,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct Term<'a> {
     name: &'a str,
     ports: Option<Vec<Term<'a>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub enum Statement<'a> {
     AgentDef(Vec<(&'a str, usize)>),
     RuleDef(Term<'a>, Term<'a>),
@@ -70,8 +70,57 @@ pub fn agent_def(input: &str) -> IResult<&str, Statement> {
 
 pub fn rule_def(input: &str) -> IResult<&str, Statement> {
     let (input, _) = ws(tag("#rule"))(input)?;
-    let (input, term_1) = term(input)?;
+    let (input, term_l) = term(input)?;
     let (input, _) = ws(tag("><"))(input)?;
-    let (input, term_2) = term(input)?;
-    Ok((input, Statement::RuleDef(term_1, term_2)))
+    let (input, term_r) = term(input)?;
+    Ok((input, Statement::RuleDef(term_l, term_r)))
+}
+
+pub fn eq_def(input: &str) -> IResult<&str, Statement> {
+    let (input, term_l) = ws(term)(input)?;
+    let (input, _) = ws(tag("="))(input)?;
+    let (input, term_r) = term(input)?;
+    Ok((input, Statement::EqDef(term_l, term_r)))
+}
+
+pub fn statement(input: &str) -> IResult<&str, Vec<Statement>> {
+    many1(alt((agent_def, rule_def, eq_def)))(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::syntax::{Statement, Term};
+
+    use super::statement;
+
+    #[test]
+    fn parser_multiline_statement_test() {
+        let result = statement("#agent Add:2, Z: 1 , E :0\n#agent A:2\r\nA(c)=A(r)");
+        assert_eq!(
+            result,
+            Ok((
+                "",
+                vec![
+                    Statement::AgentDef(vec![("Add", 2), ("Z", 1), ("E", 0)]),
+                    Statement::AgentDef(vec![("A", 2)]),
+                    Statement::EqDef(
+                        Term {
+                            name: "A",
+                            ports: Some(vec![Term {
+                                name: "c",
+                                ports: None,
+                            }]),
+                        },
+                        Term {
+                            name: "A",
+                            ports: Some(vec![Term {
+                                name: "r",
+                                ports: None,
+                            }]),
+                        },
+                    )
+                ]
+            ))
+        );
+    }
 }
