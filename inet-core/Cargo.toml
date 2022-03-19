@@ -1,0 +1,8 @@
+[package]
+name = "inet-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uuid = { version = "0.8", features = ["v1"] }
+scc = "0.6"

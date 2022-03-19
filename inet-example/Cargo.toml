@@ -1,0 +1,7 @@
+[package]
+name = "inet-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uuid = { version = "0.8", features = ["v4"] }

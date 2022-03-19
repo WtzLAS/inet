@@ -1,11 +1,2 @@
-[package]
-name = "inet"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-parking_lot = "0.12"
-crossbeam-queue = "0.3"
-color-eyre = "0.6"
-scc = "0.6"
-nom = "7"
+[workspace]
+members = ["inet-compiler", "inet-core", "inet-example"]

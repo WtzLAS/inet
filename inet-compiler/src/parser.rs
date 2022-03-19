@@ -16,10 +16,10 @@ pub struct Term<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-pub enum Statement<'a> {
-    AgentDef(Vec<(&'a str, usize)>),
-    RuleDef(Term<'a>, Term<'a>),
-    EqDef(Term<'a>, Term<'a>),
+pub enum Def<'a> {
+    Agent(Vec<(&'a str, usize)>),
+    Rule(Term<'a>, Term<'a>),
+    Eq(Term<'a>, Term<'a>),
 }
 
 pub fn identifier(input: &str) -> IResult<&str, &str> {
@@ -62,48 +62,48 @@ pub fn agent_def_atom(input: &str) -> IResult<&str, (&str, usize)> {
     }
 }
 
-pub fn agent_def(input: &str) -> IResult<&str, Statement> {
+pub fn agent_def(input: &str) -> IResult<&str, Def> {
     let (input, _) = ws(tag("#agent"))(input)?;
     let (input, agent_defs) = separated_list1(ws(tag(",")), agent_def_atom)(input)?;
-    Ok((input, Statement::AgentDef(agent_defs)))
+    Ok((input, Def::Agent(agent_defs)))
 }
 
-pub fn rule_def(input: &str) -> IResult<&str, Statement> {
+pub fn rule_def(input: &str) -> IResult<&str, Def> {
     let (input, _) = ws(tag("#rule"))(input)?;
     let (input, term_l) = term(input)?;
     let (input, _) = ws(tag("><"))(input)?;
     let (input, term_r) = term(input)?;
-    Ok((input, Statement::RuleDef(term_l, term_r)))
+    Ok((input, Def::Rule(term_l, term_r)))
 }
 
-pub fn eq_def(input: &str) -> IResult<&str, Statement> {
+pub fn eq_def(input: &str) -> IResult<&str, Def> {
     let (input, term_l) = ws(term)(input)?;
     let (input, _) = ws(tag("="))(input)?;
     let (input, term_r) = term(input)?;
-    Ok((input, Statement::EqDef(term_l, term_r)))
+    Ok((input, Def::Eq(term_l, term_r)))
 }
 
-pub fn statement(input: &str) -> IResult<&str, Vec<Statement>> {
+pub fn def(input: &str) -> IResult<&str, Vec<Def>> {
     many1(alt((agent_def, rule_def, eq_def)))(input)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::{Statement, Term};
+    use crate::parser::{Def, Term};
 
-    use super::statement;
+    use super::def;
 
     #[test]
     fn parser_multiline_statement_test() {
-        let result = statement("#agent Add:2, Z: 1 , E :0\n#agent A:2\r\nA(c)=A(r)");
+        let result = def("#agent Add:2, Z: 1 , E :0\n#agent A:2\r\nA(c)=A(r)");
         assert_eq!(
             result,
             Ok((
                 "",
                 vec![
-                    Statement::AgentDef(vec![("Add", 2), ("Z", 1), ("E", 0)]),
-                    Statement::AgentDef(vec![("A", 2)]),
-                    Statement::EqDef(
+                    Def::Agent(vec![("Add", 2), ("Z", 1), ("E", 0)]),
+                    Def::Agent(vec![("A", 2)]),
+                    Def::Eq(
                         Term {
                             name: "A",
                             ports: Some(vec![Term {
