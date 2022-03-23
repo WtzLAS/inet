@@ -33,9 +33,11 @@ pub enum Error {
     Uuid { source: uuid::Error },
 }
 
+type RuleFn = fn(&mut Machine, &Uuid, &Uuid);
+
 pub struct Machine {
     uuid_context: Context,
-    pub rules: HashMap<(Uuid, Uuid), fn(&mut Machine, &Uuid, &Uuid)>,
+    pub rules: HashMap<(Uuid, Uuid), RuleFn>,
     pub agents: HashMap<Uuid, Agent>,
     pub eqs: VecDeque<(Uuid, Uuid)>,
 }
@@ -72,20 +74,28 @@ impl Machine {
         Ok(id)
     }
 
-    pub fn new_custom(&mut self, type_id: Uuid, ports: Vec<Uuid>) -> Result<Uuid, Error> {
+    pub fn new_custom(
+        &mut self,
+        type_id: Uuid,
+        principal_port: Uuid,
+        aux_ports: Vec<Uuid>,
+    ) -> Result<Uuid, Error> {
         let id = self.generate_id()?;
-        self.eqs.push_back((id, ports[0]));
+        self.eqs.push_back((id, principal_port));
         self.agents.insert(
             id,
             Agent {
                 type_id: AgentTypeId::Custom(type_id),
-                ports,
+                ports: aux_ports,
             },
         );
         Ok(id)
     }
 
-    pub fn eval(&mut self) -> Result<(), Error> {
+    pub fn eval(&mut self) -> Result<(usize, usize, usize), Error> {
+        let mut interactions: usize = 0;
+        let mut name_op: usize = 0;
+        let mut ind_op: usize = 0;
         while let Some((lhs_id, rhs_id)) = self.eqs.pop_back() {
             let lhs_type_id = self
                 .agents
@@ -97,11 +107,9 @@ impl Machine {
                 .get(&rhs_id)
                 .context(MissingAgentSnafu { id: rhs_id })?
                 .type_id;
-            println!("{} >< {}", lhs_id, rhs_id);
-            println!("{:?} >< {:?}", lhs_type_id, rhs_type_id);
-            println!("");
             match (lhs_type_id, rhs_type_id) {
                 (_, AgentTypeId::Indirection) => {
+                    ind_op += 1;
                     let rhs_target = self
                         .agents
                         .get(&rhs_id)
@@ -111,6 +119,7 @@ impl Machine {
                     self.eqs.push_back((lhs_id, rhs_target));
                 }
                 (_, AgentTypeId::Name) => {
+                    name_op += 1;
                     let rhs_agent = self
                         .agents
                         .get_mut(&rhs_id)
@@ -120,6 +129,7 @@ impl Machine {
                     rhs_agent.ports[0] = lhs_id;
                 }
                 (AgentTypeId::Indirection, _) => {
+                    ind_op += 1;
                     let lhs_target = self
                         .agents
                         .get(&lhs_id)
@@ -129,6 +139,7 @@ impl Machine {
                     self.eqs.push_back((lhs_target, rhs_id));
                 }
                 (AgentTypeId::Name, _) => {
+                    name_op += 1;
                     let lhs_agent = self
                         .agents
                         .get_mut(&lhs_id)
@@ -138,6 +149,7 @@ impl Machine {
                     lhs_agent.ports[0] = rhs_id;
                 }
                 (AgentTypeId::Custom(lhs_type_id), AgentTypeId::Custom(rhs_type_id)) => {
+                    interactions += 1;
                     let rule = self.rules.get(&(lhs_type_id, rhs_type_id));
                     match rule {
                         Some(rule) => {
@@ -156,6 +168,6 @@ impl Machine {
                 }
             }
         }
-        Ok(())
+        Ok((interactions, name_op, ind_op))
     }
 }
