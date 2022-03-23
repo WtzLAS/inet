@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 uuid = { version = "0.8", features = ["v1"] }
-scc = "0.6"
+time = "0.3"
+snafu = "0.7"

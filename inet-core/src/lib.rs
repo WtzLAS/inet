@@ -1,88 +1,161 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
-use scc::HashMap;
-use uuid::Uuid;
+use snafu::{OptionExt, ResultExt, Snafu};
+use time::OffsetDateTime;
+use uuid::{
+    v1::{Context, Timestamp},
+    Uuid,
+};
 
-pub trait Agent: Sync {
-    fn type_id(&self) -> Uuid;
-    fn type_arity(&self) -> usize;
-    fn id(&self) -> Uuid;
-    fn ports(&self) -> Option<&[Uuid]>;
-    fn ports_mut(&mut self) -> Option<&mut [Uuid]>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentTypeId {
+    Name,
+    Indirection,
+    Custom(Uuid),
 }
 
-pub trait Interact<T: Agent>: Agent {
-    fn interact(ctx: &mut Machine, lhs: Uuid, rhs: Uuid);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Agent {
+    pub type_id: AgentTypeId,
+    pub ports: Vec<Uuid>,
 }
 
-impl<L, R> Interact<L> for R
-where
-    L: Interact<R>,
-    R: Agent,
-{
-    fn interact(ctx: &mut Machine, lhs: Uuid, rhs: Uuid) {
-        L::interact(ctx, rhs, lhs)
-    }
-}
-
-pub struct Name(Uuid);
-
-impl Agent for Name {
-    fn type_id(&self) -> Uuid {
-        Uuid::from_bytes([174, 217, 145, 87, 176, 230, 64, 255, 161, 131, 91, 88, 20, 127, 68, 40])
-    }
-
-    fn type_arity(&self) -> usize {
-        0
-    }
-
-    fn id(&self) -> Uuid {
-        self.0
-    }
-
-    fn ports(&self) -> Option<&[Uuid]> {
-        None
-    }
-
-    fn ports_mut(&mut self) -> Option<&mut [Uuid]> {
-        None
-    }
-}
-
-pub struct Indirection {
-    id: Uuid,
-    target: [Uuid; 1],
-}
-
-impl Agent for Indirection {
-    fn type_id(&self) -> Uuid {
-        Uuid::from_bytes([130, 16, 66, 172, 163, 246, 74, 238, 170, 116, 43, 215, 22, 163, 85, 154])
-    }
-
-    fn type_arity(&self) -> usize {
-        1
-    }
-
-    fn id(&self) -> Uuid {
-        self.id
-    }
-
-    fn ports(&self) -> Option<&[Uuid]> {
-        Some(&self.target)
-    }
-
-    fn ports_mut(&mut self) -> Option<&mut [Uuid]> {
-        Some(&mut self.target)
-    }
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("the agent {id} is accidentally removed"))]
+    MissingAgent { id: Uuid },
+    #[snafu(display("no rule for {lhs_type_id} >< {rhs_type_id}"))]
+    NoRule {
+        lhs_type_id: Uuid,
+        rhs_type_id: Uuid,
+    },
+    #[snafu(display("error when generating uuid"))]
+    Uuid { source: uuid::Error },
 }
 
 pub struct Machine {
-    agents: HashMap<Uuid, Box<dyn Agent>>,
-    eqs: VecDeque<(Uuid, Uuid)>,
+    uuid_context: Context,
+    pub rules: HashMap<(Uuid, Uuid), fn(&mut Machine, &Uuid, &Uuid)>,
+    pub agents: HashMap<Uuid, Agent>,
+    pub eqs: VecDeque<(Uuid, Uuid)>,
 }
 
 impl Machine {
-    fn eval(&mut self) {
-        
+    pub fn new() -> Machine {
+        Machine {
+            uuid_context: Context::new(0),
+            rules: HashMap::new(),
+            agents: HashMap::new(),
+            eqs: VecDeque::new(),
+        }
+    }
+
+    pub fn generate_id(&self) -> Result<Uuid, Error> {
+        let time = OffsetDateTime::now_utc();
+        let timestamp = Timestamp::from_unix(
+            &self.uuid_context,
+            time.unix_timestamp() as u64,
+            time.nanosecond(),
+        );
+        Uuid::new_v1(timestamp, &[0; 6]).context(UuidSnafu)
+    }
+
+    pub fn new_name(&mut self) -> Result<Uuid, Error> {
+        let id = self.generate_id()?;
+        self.agents.insert(
+            id,
+            Agent {
+                type_id: AgentTypeId::Name,
+                ports: vec![],
+            },
+        );
+        Ok(id)
+    }
+
+    pub fn new_custom(&mut self, type_id: Uuid, ports: Vec<Uuid>) -> Result<Uuid, Error> {
+        let id = self.generate_id()?;
+        self.eqs.push_back((id, ports[0]));
+        self.agents.insert(
+            id,
+            Agent {
+                type_id: AgentTypeId::Custom(type_id),
+                ports,
+            },
+        );
+        Ok(id)
+    }
+
+    pub fn eval(&mut self) -> Result<(), Error> {
+        while let Some((lhs_id, rhs_id)) = self.eqs.pop_back() {
+            let lhs_type_id = self
+                .agents
+                .get(&lhs_id)
+                .context(MissingAgentSnafu { id: lhs_id })?
+                .type_id;
+            let rhs_type_id = self
+                .agents
+                .get(&rhs_id)
+                .context(MissingAgentSnafu { id: rhs_id })?
+                .type_id;
+            println!("{} >< {}", lhs_id, rhs_id);
+            println!("{:?} >< {:?}", lhs_type_id, rhs_type_id);
+            println!("");
+            match (lhs_type_id, rhs_type_id) {
+                (_, AgentTypeId::Indirection) => {
+                    let rhs_target = self
+                        .agents
+                        .get(&rhs_id)
+                        .context(MissingAgentSnafu { id: rhs_id })?
+                        .ports[0];
+                    self.agents.remove(&rhs_id);
+                    self.eqs.push_back((lhs_id, rhs_target));
+                }
+                (_, AgentTypeId::Name) => {
+                    let rhs_agent = self
+                        .agents
+                        .get_mut(&rhs_id)
+                        .context(MissingAgentSnafu { id: rhs_id })?;
+                    rhs_agent.type_id = AgentTypeId::Indirection;
+                    rhs_agent.ports.resize(1, Uuid::default());
+                    rhs_agent.ports[0] = lhs_id;
+                }
+                (AgentTypeId::Indirection, _) => {
+                    let lhs_target = self
+                        .agents
+                        .get(&lhs_id)
+                        .context(MissingAgentSnafu { id: lhs_id })?
+                        .ports[0];
+                    self.agents.remove(&lhs_id);
+                    self.eqs.push_back((lhs_target, rhs_id));
+                }
+                (AgentTypeId::Name, _) => {
+                    let lhs_agent = self
+                        .agents
+                        .get_mut(&lhs_id)
+                        .context(MissingAgentSnafu { id: lhs_id })?;
+                    lhs_agent.type_id = AgentTypeId::Indirection;
+                    lhs_agent.ports.resize(1, Uuid::default());
+                    lhs_agent.ports[0] = rhs_id;
+                }
+                (AgentTypeId::Custom(lhs_type_id), AgentTypeId::Custom(rhs_type_id)) => {
+                    let rule = self.rules.get(&(lhs_type_id, rhs_type_id));
+                    match rule {
+                        Some(rule) => {
+                            rule(self, &lhs_id, &rhs_id);
+                        }
+                        None => {
+                            let rule = self.rules.get(&(rhs_type_id, lhs_type_id)).context(
+                                NoRuleSnafu {
+                                    lhs_type_id,
+                                    rhs_type_id,
+                                },
+                            )?;
+                            rule(self, &rhs_id, &lhs_id);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
