@@ -1,173 +1,277 @@
-use std::collections::{HashMap, VecDeque};
-
-use snafu::{OptionExt, ResultExt, Snafu};
-use time::OffsetDateTime;
-use uuid::{
-    v1::{Context, Timestamp},
-    Uuid,
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum AgentTypeId {
-    Name,
-    Indirection,
-    Custom(Uuid),
+use crossbeam_queue::SegQueue;
+use easy_parallel::Parallel;
+use sharded_slab::{pool::Ref, Clear, Pool};
+use smallvec::SmallVec;
+use snafu::{OptionExt, Snafu};
+
+#[derive(Debug)]
+pub enum Agent {
+    Tag(AtomicBool, AtomicUsize),
+    Custom(usize, SmallVec<[usize; 16]>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Agent {
-    pub type_id: AgentTypeId,
-    pub ports: Vec<Uuid>,
+impl Clear for Agent {
+    fn clear(&mut self) {
+        match self {
+            Agent::Tag(is_ind, target) => {
+                *is_ind = AtomicBool::new(false);
+                *target = AtomicUsize::new(0);
+            }
+            Agent::Custom(type_id, ports) => {
+                *type_id = 0;
+                ports.clear();
+            }
+        }
+    }
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Agent::Tag(AtomicBool::new(false), AtomicUsize::new(0))
+    }
 }
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("the agent {id} is accidentally removed"))]
-    MissingAgent { id: Uuid },
+    #[snafu(display("failed to allocate memory for new agents"))]
+    AllocationFailed,
+    #[snafu(display("provided invalid type id: actual={actual} cap={cap}"))]
+    InvalidTypeId { actual: usize, cap: usize },
+    #[snafu(display("agent {id} is accidentally cleared"))]
+    MissingAgent { id: usize },
     #[snafu(display("no rule for {lhs_type_id} >< {rhs_type_id}"))]
     NoRule {
-        lhs_type_id: Uuid,
-        rhs_type_id: Uuid,
+        lhs_type_id: usize,
+        rhs_type_id: usize,
     },
-    #[snafu(display("error when generating uuid"))]
-    Uuid { source: uuid::Error },
 }
 
-type RuleFn = fn(&mut Machine, &Uuid, &Uuid);
+type Result<T> = std::result::Result<T, Error>;
+
+type BoxedRuleFn = Box<dyn Fn(&Machine, &[usize], &[usize]) + Send + Sync>;
+
+pub struct MachineBuilder {
+    next_type_id: usize,
+    rules: HashMap<(usize, usize), BoxedRuleFn>,
+    agents: Pool<Agent>,
+    eqs: Vec<(usize, usize)>,
+}
+
+impl MachineBuilder {
+    pub fn new() -> MachineBuilder {
+        MachineBuilder {
+            next_type_id: 0,
+            rules: HashMap::new(),
+            agents: Pool::default(),
+            eqs: vec![],
+        }
+    }
+
+    pub fn new_rule(&mut self, lhs_type: usize, rhs_type: usize, rule_fn: BoxedRuleFn) {
+        self.rules.insert((lhs_type, rhs_type), rule_fn);
+    }
+
+    pub fn new_type(&mut self) -> usize {
+        let type_id = self.next_type_id;
+        self.next_type_id += 1;
+        type_id
+    }
+
+    pub fn new_tag(&self) -> Result<usize> {
+        self.agents
+            .create_with(|v| {
+                *v = Agent::default();
+            })
+            .context(AllocationFailedSnafu)
+    }
+
+    pub fn new_agent(
+        &mut self,
+        type_id: usize,
+        principal_port: usize,
+        aux_ports: &[usize],
+    ) -> Result<usize> {
+        if type_id >= self.next_type_id {
+            return Err(Error::InvalidTypeId {
+                actual: type_id,
+                cap: self.next_type_id - 1,
+            });
+        }
+        let id = self
+            .agents
+            .create_with(|v| {
+                *v = Agent::Custom(type_id, SmallVec::from_slice(aux_ports));
+            })
+            .context(AllocationFailedSnafu)?;
+        self.eqs.push((id, principal_port));
+        Ok(id)
+    }
+
+    pub fn into_machine(self) -> Machine {
+        let eqs = SegQueue::new();
+        for v in self.eqs {
+            eqs.push(v);
+        }
+        Machine {
+            max_type_id: self.next_type_id - 1,
+            rules: self.rules,
+            agents: self.agents,
+            eqs,
+        }
+    }
+}
+
+impl Default for MachineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct Machine {
-    uuid_context: Context,
-    pub rules: HashMap<(Uuid, Uuid), RuleFn>,
-    pub agents: HashMap<Uuid, Agent>,
-    pub eqs: VecDeque<(Uuid, Uuid)>,
+    max_type_id: usize,
+    rules: HashMap<(usize, usize), BoxedRuleFn>,
+    agents: Pool<Agent>,
+    eqs: SegQueue<(usize, usize)>,
 }
 
 impl Machine {
-    pub fn new() -> Machine {
-        Machine {
-            uuid_context: Context::new(0),
-            rules: HashMap::new(),
-            agents: HashMap::new(),
-            eqs: VecDeque::new(),
+    pub fn new_tag(&self) -> Result<usize> {
+        self.agents
+            .create_with(|v| {
+                *v = Agent::default();
+            })
+            .context(AllocationFailedSnafu)
+    }
+
+    pub fn new_agent(
+        &self,
+        type_id: usize,
+        principal_port: usize,
+        aux_ports: &[usize],
+    ) -> Result<usize> {
+        if type_id > self.max_type_id {
+            return Err(Error::InvalidTypeId {
+                actual: type_id,
+                cap: self.max_type_id,
+            });
         }
-    }
-
-    pub fn generate_id(&self) -> Result<Uuid, Error> {
-        let time = OffsetDateTime::now_utc();
-        let timestamp = Timestamp::from_unix(
-            &self.uuid_context,
-            time.unix_timestamp() as u64,
-            time.nanosecond(),
-        );
-        Uuid::new_v1(timestamp, &[0; 6]).context(UuidSnafu)
-    }
-
-    pub fn new_name(&mut self) -> Result<Uuid, Error> {
-        let id = self.generate_id()?;
-        self.agents.insert(
-            id,
-            Agent {
-                type_id: AgentTypeId::Name,
-                ports: vec![],
-            },
-        );
+        let id = self
+            .agents
+            .create_with(|v| {
+                *v = Agent::Custom(type_id, SmallVec::from_slice(aux_ports));
+            })
+            .context(AllocationFailedSnafu)?;
+        self.eqs.push((id, principal_port));
         Ok(id)
     }
 
-    pub fn new_custom(
-        &mut self,
-        type_id: Uuid,
-        principal_port: Uuid,
-        aux_ports: Vec<Uuid>,
-    ) -> Result<Uuid, Error> {
-        let id = self.generate_id()?;
-        self.eqs.push_back((id, principal_port));
-        self.agents.insert(
-            id,
-            Agent {
-                type_id: AgentTypeId::Custom(type_id),
-                ports: aux_ports,
-            },
-        );
-        Ok(id)
+    pub fn get_agent(&self, id: usize) -> Option<Ref<Agent>> {
+        self.agents.get(id)
     }
 
-    pub fn eval(&mut self) -> Result<(usize, usize, usize), Error> {
-        let mut interactions: usize = 0;
-        let mut name_op: usize = 0;
-        let mut ind_op: usize = 0;
-        while let Some((lhs_id, rhs_id)) = self.eqs.pop_back() {
-            let lhs_type_id = self
-                .agents
-                .get(&lhs_id)
-                .context(MissingAgentSnafu { id: lhs_id })?
-                .type_id;
-            let rhs_type_id = self
-                .agents
-                .get(&rhs_id)
-                .context(MissingAgentSnafu { id: rhs_id })?
-                .type_id;
-            match (lhs_type_id, rhs_type_id) {
-                (_, AgentTypeId::Indirection) => {
-                    ind_op += 1;
-                    let rhs_target = self
-                        .agents
-                        .get(&rhs_id)
-                        .context(MissingAgentSnafu { id: rhs_id })?
-                        .ports[0];
-                    self.agents.remove(&rhs_id);
-                    self.eqs.push_back((lhs_id, rhs_target));
-                }
-                (_, AgentTypeId::Name) => {
-                    name_op += 1;
-                    let rhs_agent = self
-                        .agents
-                        .get_mut(&rhs_id)
-                        .context(MissingAgentSnafu { id: rhs_id })?;
-                    rhs_agent.type_id = AgentTypeId::Indirection;
-                    rhs_agent.ports.resize(1, Uuid::default());
-                    rhs_agent.ports[0] = lhs_id;
-                }
-                (AgentTypeId::Indirection, _) => {
-                    ind_op += 1;
-                    let lhs_target = self
-                        .agents
-                        .get(&lhs_id)
-                        .context(MissingAgentSnafu { id: lhs_id })?
-                        .ports[0];
-                    self.agents.remove(&lhs_id);
-                    self.eqs.push_back((lhs_target, rhs_id));
-                }
-                (AgentTypeId::Name, _) => {
-                    name_op += 1;
+    pub fn remove_agent(&self, id: usize) {
+        self.agents.clear(id);
+    }
+
+    pub fn new_eq(&self, lhs_id: usize, rhs_id: usize) {
+        self.eqs.push((lhs_id, rhs_id));
+    }
+
+    pub fn eval(&self) -> Result<(usize, usize)> {
+        let interactions = AtomicUsize::new(0);
+        let name_op = AtomicUsize::new(0);
+        Parallel::new()
+            .each(0..2, |_| -> Result<()> {
+                while let Some((lhs_id, rhs_id)) = self.eqs.pop() {
                     let lhs_agent = self
-                        .agents
-                        .get_mut(&lhs_id)
+                        .get_agent(lhs_id)
                         .context(MissingAgentSnafu { id: lhs_id })?;
-                    lhs_agent.type_id = AgentTypeId::Indirection;
-                    lhs_agent.ports.resize(1, Uuid::default());
-                    lhs_agent.ports[0] = rhs_id;
-                }
-                (AgentTypeId::Custom(lhs_type_id), AgentTypeId::Custom(rhs_type_id)) => {
-                    interactions += 1;
-                    let rule = self.rules.get(&(lhs_type_id, rhs_type_id));
-                    match rule {
-                        Some(rule) => {
-                            rule(self, &lhs_id, &rhs_id);
+                    let rhs_agent = self
+                        .get_agent(rhs_id)
+                        .context(MissingAgentSnafu { id: rhs_id })?;
+                    match (&*lhs_agent, &*rhs_agent) {
+                        (_, Agent::Tag(is_ind, target)) => {
+                            loop {
+                                if is_ind.load(Ordering::Acquire) {
+                                    let target_value = target.load(Ordering::Acquire);
+                                    self.remove_agent(rhs_id);
+                                    self.new_eq(lhs_id, target_value);
+                                    break;
+                                } else if is_ind
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::AcqRel,
+                                        Ordering::Relaxed,
+                                    )
+                                    .is_ok()
+                                {
+                                    target.store(lhs_id, Ordering::Release);
+                                    break;
+                                }
+                            }
+                            name_op.fetch_add(1, Ordering::Relaxed);
                         }
-                        None => {
-                            let rule = self.rules.get(&(rhs_type_id, lhs_type_id)).context(
-                                NoRuleSnafu {
-                                    lhs_type_id,
-                                    rhs_type_id,
-                                },
-                            )?;
-                            rule(self, &rhs_id, &lhs_id);
+                        (Agent::Tag(is_ind, target), _) => {
+                            loop {
+                                if is_ind.load(Ordering::SeqCst) {
+                                    let target_value = target.load(Ordering::SeqCst);
+                                    self.remove_agent(lhs_id);
+                                    self.new_eq(target_value, rhs_id);
+                                    break;
+                                } else if is_ind
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::SeqCst,
+                                        Ordering::SeqCst,
+                                    )
+                                    .is_ok()
+                                {
+                                    target.store(rhs_id, Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                            name_op.fetch_add(1, Ordering::Relaxed);
+                        }
+                        (
+                            Agent::Custom(lhs_type_id, lhs_ports),
+                            Agent::Custom(rhs_type_id, rhs_ports),
+                        ) => {
+                            let rule = self.rules.get(&(*lhs_type_id, *rhs_type_id));
+                            match rule {
+                                Some(rule) => {
+                                    rule(self, lhs_ports, rhs_ports);
+                                }
+                                None => {
+                                    let reverse_rule = self
+                                        .rules
+                                        .get(&(*rhs_type_id, *lhs_type_id))
+                                        .context(NoRuleSnafu {
+                                            lhs_type_id: *lhs_type_id,
+                                            rhs_type_id: *rhs_type_id,
+                                        })?;
+                                    reverse_rule(self, rhs_ports, lhs_ports);
+                                }
+                            }
+                            self.remove_agent(lhs_id);
+                            self.remove_agent(rhs_id);
+                            interactions.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 }
-            }
-        }
-        Ok((interactions, name_op, ind_op))
+                Ok(())
+            })
+            .run();
+        Ok((
+            interactions.load(Ordering::Relaxed),
+            name_op.load(Ordering::Relaxed),
+        ))
     }
 }

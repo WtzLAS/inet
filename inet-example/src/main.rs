@@ -1,96 +1,96 @@
+use std::{sync::atomic::Ordering, time::Instant};
+
 use color_eyre::eyre::Result;
-use inet_core::{AgentTypeId, Machine};
-use uuid::Uuid;
+use inet_core::{Agent, Machine, MachineBuilder};
+use mimalloc::MiMalloc;
 use whiteread::Reader;
 
-const ADD_TYPE_ID: Uuid = Uuid::from_bytes([
-    250, 211, 204, 127, 115, 229, 73, 117, 147, 186, 121, 90, 43, 20, 175, 16,
-]);
-const S_TYPE_ID: Uuid = Uuid::from_bytes([
-    97, 125, 248, 135, 132, 230, 70, 92, 140, 32, 66, 213, 194, 177, 70, 34,
-]);
-const Z_TYPE_ID: Uuid = Uuid::from_bytes([
-    216, 242, 220, 207, 4, 15, 73, 7, 184, 188, 246, 152, 27, 96, 167, 122,
-]);
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
-fn add_s(machine: &mut Machine, lhs_id: &Uuid, rhs_id: &Uuid) {
-    let lhs_agent = machine.agents.get(lhs_id).unwrap();
-    let rhs_agent = machine.agents.get(rhs_id).unwrap();
-    let n1 = lhs_agent.ports[0];
-    let n2 = rhs_agent.ports[0];
-    let n3 = lhs_agent.ports[1];
-    machine.agents.remove(lhs_id);
-    machine.agents.remove(rhs_id);
-    let n = machine.new_name().unwrap();
-    machine.new_custom(ADD_TYPE_ID, n2, vec![n, n3]).unwrap();
-    machine.new_custom(S_TYPE_ID, n1, vec![n]).unwrap();
-}
-
-fn add_z(machine: &mut Machine, lhs_id: &Uuid, rhs_id: &Uuid) {
-    let lhs_agent = machine.agents.get(lhs_id).unwrap();
-    let n1 = lhs_agent.ports[0];
-    let n2 = lhs_agent.ports[1];
-    machine.agents.remove(lhs_id);
-    machine.agents.remove(rhs_id);
-    machine.eqs.push_back((n1, n2));
-}
-
-fn insert_number(machine: &mut Machine, port: Uuid, mut n: u32) -> Result<()> {
+fn insert_number(
+    machine: &mut MachineBuilder,
+    s_type_id: usize,
+    z_type_id: usize,
+    port: usize,
+    mut n: u32,
+) -> Result<()> {
     let mut last_port = port;
     while n > 0 {
-        let aux_port = machine.new_name()?;
-        machine.new_custom(S_TYPE_ID, last_port, vec![aux_port])?;
+        let aux_port = machine.new_tag()?;
+        machine.new_agent(s_type_id, last_port, &[aux_port])?;
         last_port = aux_port;
         n -= 1;
     }
-    machine.new_custom(Z_TYPE_ID, last_port, vec![])?;
+    machine.new_agent(z_type_id, last_port, &[])?;
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let mut machine = Machine::new();
-    machine.rules.insert((ADD_TYPE_ID, S_TYPE_ID), add_s);
-    machine.rules.insert((ADD_TYPE_ID, Z_TYPE_ID), add_z);
+    let mut machine = MachineBuilder::default();
+
+    let add_type_id = machine.new_type();
+    let s_type_id = machine.new_type();
+    let z_type_id = machine.new_type();
+
+    let rule_add_s = move |machine: &Machine, lhs_ports: &[usize], rhs_ports: &[usize]| {
+        let n = machine.new_tag().unwrap();
+        machine
+            .new_agent(add_type_id, rhs_ports[0], &[n, lhs_ports[1]])
+            .unwrap();
+        machine.new_agent(s_type_id, lhs_ports[0], &[n]).unwrap();
+    };
+
+    let rule_add_z = |machine: &Machine, lhs_ports: &[usize], _rhs_ports: &[usize]| {
+        machine.new_eq(lhs_ports[0], lhs_ports[1]);
+    };
+
+    machine.new_rule(add_type_id, s_type_id, Box::new(rule_add_s));
+    machine.new_rule(add_type_id, z_type_id, Box::new(rule_add_z));
 
     let mut input = Reader::from_stdin_naive();
 
     let (number1, number2): (u32, u32) = input.parse()?;
 
-    let x = machine.new_name()?;
-    let y = machine.new_name()?;
-    let output = machine.new_name()?;
+    let x = machine.new_tag()?;
+    let y = machine.new_tag()?;
+    let output = machine.new_tag()?;
 
-    insert_number(&mut machine, x, number1)?;
-    insert_number(&mut machine, y, number2)?;
+    insert_number(&mut machine, s_type_id, z_type_id, x, number1).unwrap();
+    insert_number(&mut machine, s_type_id, z_type_id, y, number2).unwrap();
 
-    machine.new_custom(ADD_TYPE_ID, x, vec![output, y])?;
+    machine.new_agent(add_type_id, x, &[output, y]).unwrap();
 
-    let (interactions, name_op, ind_op) = machine.eval()?;
+    let machine = machine.into_machine();
 
-    println!("({} interactions, {} name operations, {} indirection operations)", interactions, name_op, ind_op);
+    let start = Instant::now();
+    let (interactions, name_op) = machine.eval()?;
+    let end = Instant::now();
 
-    // dbg!(ADD_TYPE_ID);
-    // dbg!(S_TYPE_ID);
-    // dbg!(Z_TYPE_ID);
-
-    // dbg!(&machine.agents);
+    println!("| {} seconds", (end - start).as_secs_f64());
+    println!(
+        "| {} interactions, {} name operations",
+        interactions, name_op
+    );
 
     let mut cur = output;
     let mut result = 0;
 
     loop {
-        let agent = machine.agents.get(&cur).unwrap();
-        match agent.type_id {
-            AgentTypeId::Indirection => {}
-            AgentTypeId::Custom(S_TYPE_ID) => {
-                result += 1;
+        let agent = machine.get_agent(cur).unwrap();
+        match &*agent {
+            Agent::Tag(is_ind, target) if is_ind.load(Ordering::Relaxed) => {
+                cur = target.load(Ordering::Relaxed);
             }
-            AgentTypeId::Custom(Z_TYPE_ID) => {
+            Agent::Custom(type_id, ports) if *type_id == s_type_id => {
+                result += 1;
+                cur = ports[0];
+            }
+            Agent::Custom(type_id, _) if *type_id == z_type_id => {
                 break;
             }
             _ => unreachable!(),
         }
-        cur = agent.ports[0];
     }
 
     println!("{}", result);

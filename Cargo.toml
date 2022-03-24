@@ -1,2 +1,6 @@
 [workspace]
 members = ["inet-compiler", "inet-core", "inet-example"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

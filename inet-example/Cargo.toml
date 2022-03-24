@@ -5,6 +5,6 @@ edition = "2021"
 
 [dependencies]
 inet-core = { path = "../inet-core" }
-uuid = { version = "0.8", features = ["v4"] }
 color-eyre = "0.6"
 whiteread = "0.5"
+mimalloc = "0.1"
