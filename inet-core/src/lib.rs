@@ -229,8 +229,8 @@ impl Machine {
                         }
                         (Agent::Tag(is_ind, target), _) => {
                             loop {
-                                if is_ind.load(Ordering::SeqCst) {
-                                    let target_value = target.load(Ordering::SeqCst);
+                                if is_ind.load(Ordering::Acquire) {
+                                    let target_value = target.load(Ordering::Acquire);
                                     self.remove_agent(lhs_id);
                                     self.new_eq(target_value, rhs_id);
                                     break;
@@ -238,12 +238,12 @@ impl Machine {
                                     .compare_exchange(
                                         false,
                                         true,
-                                        Ordering::SeqCst,
-                                        Ordering::SeqCst,
+                                        Ordering::AcqRel,
+                                        Ordering::Relaxed,
                                     )
                                     .is_ok()
                                 {
-                                    target.store(rhs_id, Ordering::SeqCst);
+                                    target.store(rhs_id, Ordering::Release);
                                     break;
                                 }
                             }
