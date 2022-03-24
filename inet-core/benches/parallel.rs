@@ -1,9 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-
-use std::{sync::atomic::Ordering, time::Instant};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 use color_eyre::eyre::Result;
-use inet_core::{Agent, Machine, MachineBuilder};
+use inet_core::{Machine, MachineBuilder};
 
 fn insert_number(
     machine: &mut MachineBuilder,
@@ -23,7 +21,7 @@ fn insert_number(
     Ok(())
 }
 
-fn compute() {
+fn prepare() -> Machine {
     let mut builder = MachineBuilder::default();
 
     let add_type_id = builder.new_type();
@@ -54,13 +52,17 @@ fn compute() {
 
     builder.new_agent(add_type_id, x, &[output, y]).unwrap();
 
-    let machine = builder.into_machine();
-
-    machine.eval().unwrap();
+    builder.into_machine()
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("basic", |b| b.iter(|| compute()));
+    c.bench_function("heavy_add", |b| {
+        b.iter_batched(
+            || prepare(),
+            |machine| machine.eval().unwrap(),
+            criterion::BatchSize::SmallInput,
+        );
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);

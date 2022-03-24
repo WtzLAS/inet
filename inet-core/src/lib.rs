@@ -73,16 +73,19 @@ impl MachineBuilder {
         }
     }
 
+    #[inline(always)]
     pub fn new_rule(&mut self, lhs_type: usize, rhs_type: usize, rule_fn: BoxedRuleFn) {
         self.rules.insert((lhs_type, rhs_type), rule_fn);
     }
 
+    #[inline(always)]
     pub fn new_type(&mut self) -> usize {
         let type_id = self.next_type_id;
         self.next_type_id += 1;
         type_id
     }
 
+    #[inline(always)]
     pub fn new_tag(&self) -> Result<usize> {
         self.agents
             .create_with(|v| {
@@ -91,6 +94,7 @@ impl MachineBuilder {
             .context(AllocationFailedSnafu)
     }
 
+    #[inline(always)]
     pub fn new_agent(
         &mut self,
         type_id: usize,
@@ -141,6 +145,7 @@ pub struct Machine {
 }
 
 impl Machine {
+    #[inline(always)]
     pub fn new_tag(&self) -> Result<usize> {
         self.agents
             .create_with(|v| {
@@ -149,6 +154,7 @@ impl Machine {
             .context(AllocationFailedSnafu)
     }
 
+    #[inline(always)]
     pub fn new_agent(
         &self,
         type_id: usize,
@@ -171,14 +177,17 @@ impl Machine {
         Ok(id)
     }
 
+    #[inline(always)]
     pub fn get_agent(&self, id: usize) -> Option<Ref<Agent>> {
         self.agents.get(id)
     }
 
+    #[inline(always)]
     pub fn remove_agent(&self, id: usize) {
         self.agents.clear(id);
     }
 
+    #[inline(always)]
     pub fn new_eq(&self, lhs_id: usize, rhs_id: usize) {
         self.eqs.push((lhs_id, rhs_id));
     }
