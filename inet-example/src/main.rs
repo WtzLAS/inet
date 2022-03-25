@@ -1,7 +1,7 @@
 use std::{sync::atomic::Ordering, time::Instant};
 
 use color_eyre::eyre::Result;
-use inet_core::{Agent, Machine, MachineBuilder};
+use inet_core::{Agent, Context, MachineBuilder};
 use mimalloc::MiMalloc;
 use whiteread::Reader;
 
@@ -14,16 +14,15 @@ fn insert_number(
     z_type_id: usize,
     port: usize,
     mut n: u32,
-) -> Result<()> {
+) {
     let mut last_port = port;
     while n > 0 {
-        let aux_port = machine.new_tag()?;
-        machine.new_agent(s_type_id, last_port, &[aux_port])?;
+        let aux_port = machine.new_tag();
+        machine.new_agent(s_type_id, last_port, &[aux_port]);
         last_port = aux_port;
         n -= 1;
     }
-    machine.new_agent(z_type_id, last_port, &[])?;
-    Ok(())
+    machine.new_agent(z_type_id, last_port, &[]);
 }
 
 fn main() -> Result<()> {
@@ -33,16 +32,24 @@ fn main() -> Result<()> {
     let s_type_id = machine.new_type();
     let z_type_id = machine.new_type();
 
-    let rule_add_s = move |machine: &Machine, lhs_ports: &[usize], rhs_ports: &[usize]| {
-        let n = machine.new_tag().unwrap();
-        machine
-            .new_agent(add_type_id, rhs_ports[0], &[n, lhs_ports[1]])
-            .unwrap();
-        machine.new_agent(s_type_id, lhs_ports[0], &[n]).unwrap();
+    let rule_add_s = move |context: Context| {
+        let n = context.machine.new_tag();
+        context.machine.new_agent(
+            add_type_id,
+            context.rhs_ports[0],
+            &[n, context.lhs_ports[1]],
+        );
+        context
+            .machine
+            .new_agent(s_type_id, context.lhs_ports[0], &[n]);
+        context.remove_old_agents();
     };
 
-    let rule_add_z = |machine: &Machine, lhs_ports: &[usize], _rhs_ports: &[usize]| {
-        machine.new_eq(lhs_ports[0], lhs_ports[1]);
+    let rule_add_z = |context: Context| {
+        context
+            .machine
+            .new_eq(context.lhs_ports[0], context.lhs_ports[1]);
+        context.remove_old_agents();
     };
 
     machine.new_rule(add_type_id, s_type_id, Box::new(rule_add_s));
@@ -52,19 +59,19 @@ fn main() -> Result<()> {
 
     let (number1, number2): (u32, u32) = input.parse()?;
 
-    let x = machine.new_tag()?;
-    let y = machine.new_tag()?;
-    let output = machine.new_tag()?;
+    let x = machine.new_tag();
+    let y = machine.new_tag();
+    let output = machine.new_tag();
 
-    insert_number(&mut machine, s_type_id, z_type_id, x, number1).unwrap();
-    insert_number(&mut machine, s_type_id, z_type_id, y, number2).unwrap();
+    insert_number(&mut machine, s_type_id, z_type_id, x, number1);
+    insert_number(&mut machine, s_type_id, z_type_id, y, number2);
 
-    machine.new_agent(add_type_id, x, &[output, y]).unwrap();
+    machine.new_agent(add_type_id, x, &[output, y]);
 
     let machine = machine.into_machine();
 
     let start = Instant::now();
-    let (interactions, name_op) = machine.eval()?;
+    let (interactions, name_op) = machine.eval();
 
     let mut cur = output;
     let mut result = 0;
