@@ -13,6 +13,7 @@
 - [x] 多线程优化
 - [x] 统计信息
 - [ ] 支持原地(In-place)替换规则
+- [ ] 支持Weak Reduction
 - [ ] ~~Rule匹配使用MPHF~~ (没有带来预期性能收益)
 
 ## inet-example
