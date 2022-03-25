@@ -13,8 +13,8 @@
 - [x] 多线程优化
 - [x] 统计信息
 - [x] 支持原地(In-place)替换规则 (通过clear旧Agent并复用空间来间接实现)
-- [ ] 支持Weak Reduction
-- [ ] 支持Agent带有数据
+- [ ] Weak Reduction
+- [x] 支持Agent带数据 (现在使用`Box<dyn Any + Send + Sync>`来做类型擦除，有优化空间)
 - [ ] ~~Rule匹配使用MPHF~~ (没有带来预期性能收益)
 
 ## inet-example
