@@ -65,13 +65,6 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     let (interactions, name_op) = machine.eval()?;
-    let end = Instant::now();
-
-    println!("| {} seconds", (end - start).as_secs_f64());
-    println!(
-        "| {} interactions, {} name operations",
-        interactions, name_op
-    );
 
     let mut cur = output;
     let mut result = 0;
@@ -92,6 +85,13 @@ fn main() -> Result<()> {
             _ => unreachable!(),
         }
     }
+    let end = Instant::now();
+
+    println!("| {} seconds", (end - start).as_secs_f64());
+    println!(
+        "| {} interactions, {} name operations",
+        interactions, name_op
+    );
 
     println!("{}", result);
 
