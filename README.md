@@ -14,6 +14,7 @@
 - [x] 统计信息
 - [ ] 支持原地(In-place)替换规则
 - [ ] 支持Weak Reduction
+- [ ] 支持Agent带有数据
 - [ ] ~~Rule匹配使用MPHF~~ (没有带来预期性能收益)
 
 ## inet-example
