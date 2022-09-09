@@ -4,14 +4,3 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-smallvec = "1.8"
-sharded-slab = "0.1"
-crossbeam-queue = "0.3"
-easy-parallel = "3.2"
-
-[dev-dependencies]
-criterion = "0.3"
-
-[[bench]]
-name = "parallel"
-harness = false
