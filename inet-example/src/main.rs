@@ -51,7 +51,7 @@ fn main() {
     machine.new_agent_and_eq(ADD_ID, x, &[y, xpy]);
     machine.new_agent_and_eq(ADD_ID, z, &[xpy, o]);
 
-    dbg!(machine.run());
+    dbg!(machine.par_run());
 
     let o = unsafe { Box::from_raw(o) };
     dbg!(&o);

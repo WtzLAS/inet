@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 crossbeam-queue = "0.3"
+easy-parallel = "3"

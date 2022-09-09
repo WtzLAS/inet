@@ -7,6 +7,7 @@ use std::{
 };
 
 use crossbeam_queue::SegQueue;
+use easy_parallel::Parallel;
 
 pub type BoxRuleFn = Box<dyn Fn(Context) + Send + Sync>;
 
@@ -66,7 +67,7 @@ impl Agent {
 }
 
 pub struct Machine {
-    eqs: SegQueue<(*mut Agent, *mut Agent)>,
+    eqs: SegQueue<(usize, usize)>,
     rules: HashMap<(usize, usize), BoxRuleFn>,
 }
 
@@ -92,7 +93,7 @@ impl Machine {
     }
 
     pub fn new_eq(&self, lhs: *mut Agent, rhs: *mut Agent) {
-        self.eqs.push((lhs, rhs));
+        self.eqs.push((lhs as usize, rhs as usize));
     }
 
     pub fn new_agent_and_eq(
@@ -105,7 +106,7 @@ impl Machine {
         ports.extend_from_slice(aux_ports);
         let agent = Box::new(Agent::Normal { id, ports });
         let result = Box::into_raw(agent);
-        self.eqs.push((result, pri_port));
+        self.new_eq(result, pri_port);
         result
     }
 
@@ -117,6 +118,8 @@ impl Machine {
         let mut op_interact = 0;
         let mut op_name = 0;
         while let Some((ptr_lhs, ptr_rhs)) = self.eqs.pop() {
+            let ptr_lhs = ptr_lhs as *mut Agent;
+            let ptr_rhs = ptr_rhs as *mut Agent;
             let lhs = unsafe { Box::from_raw(ptr_lhs) };
             let rhs = unsafe { Box::from_raw(ptr_rhs) };
             // println!("\n[+] {:?} >< {:?}", lhs, rhs);
@@ -133,11 +136,11 @@ impl Machine {
                             // println!(" |  Var1: {:?} now points at {:?}", ptr_rhs, ptr_lhs);
                             Box::leak(lhs);
                             Box::leak(rhs);
-                        },
+                        }
                         Err(target) => {
                             // println!(" |  Ind1: {:?} <=> {:?}", ptr_lhs, target);
-                            self.eqs.push((Box::into_raw(lhs), target));
-                        },
+                            self.new_eq(Box::into_raw(lhs), target);
+                        }
                     }
                     op_name += 1;
                 }
@@ -152,11 +155,11 @@ impl Machine {
                             // println!(" |  Var2: {:?} now points at {:?}", ptr_lhs, ptr_rhs);
                             Box::leak(lhs);
                             Box::leak(rhs);
-                        },
+                        }
                         Err(target) => {
                             // println!(" |  Ind2: {:?} <=> {:?}", target, ptr_rhs);
-                            self.eqs.push((target, Box::into_raw(rhs)))
-                        },
+                            self.new_eq(target, Box::into_raw(rhs))
+                        }
                     }
                     op_name += 1;
                 }
@@ -188,8 +191,12 @@ impl Machine {
         (op_interact, op_name)
     }
 
-    pub fn par_run() {
-
+    pub fn par_run(&self) -> (usize, usize) {
+        Parallel::new()
+            .each(0..2, |_| self.run())
+            .run()
+            .into_iter()
+            .fold((0, 0), |(i, n), (ci, cn)| (i + ci, n + cn))
     }
 }
 
